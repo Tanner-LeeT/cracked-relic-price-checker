@@ -1,16 +1,19 @@
-﻿using System.Text.RegularExpressions;
-using System.Globalization;
+﻿using System.Globalization;
+using System.Text.RegularExpressions;
+using WarframeRelicScanner;
 
 namespace CrackedRelicPriceChecker.Services
 {
 	public static class RelicTextMatcher
 	{
+		public static bool EnableDebugLogging = true; // Toggle this to see debug candidates
+
 		public static List<string> MatchItems(string rawText, IEnumerable<string> knownItems)
 		{
 			var cleanedInput = rawText.Trim();
 			var results = new List<string>();
 
-			// Check for direct match first
+			// Check for exact match
 			var exact = knownItems.FirstOrDefault(item =>
 				string.Equals(item, cleanedInput, StringComparison.OrdinalIgnoreCase));
 
@@ -20,48 +23,65 @@ namespace CrackedRelicPriceChecker.Services
 				return results;
 			}
 
-			// Otherwise, fuzzy sub-match
+			// Split into phrases by common separators
 			var phrases = Regex.Split(cleanedInput, @"[\|\-–•\n]").Select(w => w.Trim()).Where(w => w.Length > 0);
 
 			foreach (var phrase in phrases)
 			{
-				var matches = FindKnownSubstrings(phrase, knownItems.ToList());
-				if (matches.Count > 0)
-					results.AddRange(matches);
+				var match = FindBestMatch(phrase, knownItems.ToList(), out string debug);
+				if (match != null)
+					results.Add(match);
 				else
 					results.Add($"❌ Unknown: {phrase}");
+
+				if (EnableDebugLogging && debug != null)
+					MainWindow.AppendToLogFile(debug);
 			}
 
 			return results;
 		}
 
-		private static List<string> FindKnownSubstrings(string text, List<string> knownItems)
+		private static string? FindBestMatch(string text, List<string> knownItems, out string debugOut)
 		{
-			var matches = new List<string>();
 			var input = text.ToLowerInvariant();
+			var inputTokens = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+			var bestScore = 0.0;
+			string? bestMatch = null;
+			var debug = new System.Text.StringBuilder();
 
 			foreach (var item in knownItems)
 			{
 				var target = item.ToLowerInvariant();
+				var score = GetSimilarityScore(input, target);
 
-				// Trying fuzzy match if full string contains the known item
-				if (input.Contains(target))
+				// Boost score if tokens overlap (e.g., "braton", "prime")
+				foreach (var token in inputTokens)
 				{
-					matches.Add(item);
-					input = input.Replace(target, ""); // Remove match to avoid overlap
+					if (target.Contains(token))
+						score += 0.02;
 				}
-				else
+
+				// Penalize mismatched prime names (e.g., Wisp vs Ash)
+				var inputPrefix = inputTokens.FirstOrDefault();
+				var targetPrefix = target.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+				if (!string.Equals(inputPrefix, targetPrefix, StringComparison.OrdinalIgnoreCase))
 				{
-					double score = GetSimilarityScore(input, target);
-					if (score >= 0.85 && input.Length >= 10)
-					{
-						matches.Add(item);
-						break;
-					}
+					score -= 0.05;
+				}
+
+				debug.AppendLine($"   🔍 Candidate: {item} → Score: {score:0.000}");
+
+				if (score > bestScore && score >= 0.84)
+				{
+					bestScore = score;
+					bestMatch = item;
 				}
 			}
 
-			return matches;
+			debugOut = $"🧠 Fuzzy match candidates for '{text}':\n{debug}" +
+					   (bestMatch != null ? $"✅ Best match: {bestMatch}\n" : $"❌ No good match.\n");
+
+			return bestMatch;
 		}
 
 		private static double GetSimilarityScore(string a, string b)
