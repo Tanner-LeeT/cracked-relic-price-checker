@@ -55,126 +55,91 @@ namespace WarframeRelicScanner
 				// Capture full screen
 				using var fullScreenshot = ScreenshotService.CaptureRegion(firstMonitorBounds);
 
-				List<System.Drawing.Rectangle> rewardRegions = new();
-				List<string> matchedItems = new();
-				HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-				StringBuilder debugLog = new();
+				var rewardRegions = GetRewardRegions(); // always all 4
+				var matchedItems = new List<string>();
+				var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+				var priceResults = new List<string>();
+				var debugLog = new StringBuilder();
 
-				// Layout detection
-				for (int regionCount = 4; regionCount >= 1; regionCount--)
-				{
-					var tryRegions = GetRewardRegions(regionCount);
-					var tempMatches = new List<string>();
-					var tempSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-					debugLog.AppendLine($"🔍 Trying {regionCount}-block layout...");
-
-					for (int i = 0; i < tryRegions.Count; i++)
-					{
-						using var rawCrop = fullScreenshot.Clone(tryRegions[i], fullScreenshot.PixelFormat);
-						rawCrop.Save($"debug_crop_try_{regionCount}_{i + 1}.png");
-
-						var ocrLines = await _ocrService.ExtractItemNamesAsync(rawCrop);
-
-						if (ocrLines.Count == 0) continue;
-
-						string combined = string.Join(" ", ocrLines.Where(l => !string.IsNullOrWhiteSpace(l))).Trim();
-						var cleaned = OcrService.FixCommonErrors(combined);
-						var matches = RelicTextMatcher.MatchItems(cleaned, KnownItems.KnownRelicRewards);
-
-						foreach (var match in matches)
-						{
-							if (!match.StartsWith("❌") && tempSeen.Add(match))
-								tempMatches.Add(match);
-						}
-					}
-
-					if (tempMatches.Count == tryRegions.Count)
-					{
-						debugLog.AppendLine($"✅ Layout resolved at {regionCount}-block layout with {tempMatches.Count} match(es).");
-						rewardRegions = tryRegions;
-						matchedItems = tempMatches;
-						seen = tempSeen;
-						break;
-					}
-					else
-					{
-						debugLog.AppendLine($"❌ Only {tempMatches.Count}/{tryRegions.Count} matched.");
-					}
-				}
-
-				if (matchedItems.Count == 0)
-				{
-					ResultsTextBox.Text = "No matched items found.";
-					AppendToLogFile(debugLog.ToString());
-					return;
-				}
-
-				// Confirm final block matches again + log
+				debugLog.AppendLine("🔍 Full 4-block scan started...");
 				debugLog.AppendLine();
-				debugLog.AppendLine("📦 Final Region OCR and Matches:");
+
+				var regionToText = new Dictionary<System.Drawing.Rectangle, string>();
 
 				for (int i = 0; i < rewardRegions.Count; i++)
 				{
-					using var rawCrop = fullScreenshot.Clone(rewardRegions[i], fullScreenshot.PixelFormat);
+					var region = rewardRegions[i];
+
+					using var rawCrop = fullScreenshot.Clone(region, fullScreenshot.PixelFormat);
 					rawCrop.Save($"debug_crop_{i + 1}.png");
 
-					var ocrLines = await _ocrService.ExtractItemNamesAsync(rawCrop);
+					var ocrLines = await WinOcrService.ExtractItemNamesAsync(rawCrop);
 
 					if (ocrLines.Count == 0)
 					{
-						debugLog.AppendLine($"❌ OCR returned no text for block {i + 1}");
+						debugLog.AppendLine($"❌ Block {i + 1}: No OCR lines found.");
 						continue;
 					}
 
 					string combined = string.Join(" ", ocrLines.Where(l => !string.IsNullOrWhiteSpace(l))).Trim();
-					AppendToLogFile($"[Block {i + 1}] Raw OCR Combined: {combined}");
+					debugLog.AppendLine($"🧾 Block {i + 1} OCR: {combined}");
 
 					var cleaned = OcrService.FixCommonErrors(combined);
-					AppendToLogFile($"[Block {i + 1}] Cleaned: {cleaned}");
+					debugLog.AppendLine($"🧼 Cleaned: {cleaned}");
 
 					var matches = RelicTextMatcher.MatchItems(cleaned, KnownItems.KnownRelicRewards);
 
+					if (matches.Count == 0)
+					{
+						debugLog.AppendLine($"❌ No matches found.");
+					}
+
 					foreach (var match in matches)
 					{
-						AppendToLogFile($"[Block {i + 1}] Matched: {match}");
-						debugLog.AppendLine($"[{i + 1}] Matched: {match}");
+						debugLog.AppendLine($"✅ Match: {match}");
+						if (!match.StartsWith("❌") && seen.Add(match))
+						{
+							matchedItems.Add(match);
+						}
 					}
+
+					debugLog.AppendLine();
 				}
 
-				debugLog.AppendLine();
-				debugLog.AppendLine("✅ Final Matched Items:");
-				foreach (var item in matchedItems)
-					debugLog.AppendLine(item);
+				if (matchedItems.Count == 0)
+				{
+					debugLog.AppendLine("❌ No valid items matched. Exiting.");
+					ResultsTextBox.Text = debugLog.ToString();
+					AppendToLogFile(debugLog.ToString());
+					return;
+				}
 
-				ResultsTextBox.Text = debugLog.ToString();
-				AppendToLogFile(debugLog.ToString());
-
-				// Price lookup
-				var priceResults = new List<string>();
+				debugLog.AppendLine("💰 Looking up prices...");
 				foreach (var item in matchedItems)
 				{
 					var price = await _marketClient.GetItemPriceAsync(item);
 					priceResults.Add($"{item}: {price}");
-				}
 
-				ResultsTextBox.Text = string.Join(Environment.NewLine, priceResults);
-
-				var regionToText = new Dictionary<System.Drawing.Rectangle, string>();
-				for (int i = 0; i < matchedItems.Count; i++)
-				{
-					var itemName = matchedItems[i];
-					if (!itemName.Contains("Forma", StringComparison.OrdinalIgnoreCase))
+					// Try to map to region (skip Forma)
+					if (!item.Contains("Forma", StringComparison.OrdinalIgnoreCase))
 					{
-						var priceText = priceResults[i].Split(':')[1].Trim();
-						regionToText[rewardRegions[i]] = $"{itemName}: {priceText}p";
+						var idx = matchedItems.IndexOf(item);
+						if (idx < rewardRegions.Count)
+							if (price.EndsWith("p", StringComparison.OrdinalIgnoreCase))
+								price = price[..^1];
+						regionToText[rewardRegions[idx]] = $"{item}: {price}p";
 					}
 				}
+
+				debugLog.AppendLine("✅ Final Matched Items with Prices:");
+				debugLog.AppendLine(string.Join(Environment.NewLine, priceResults));
+
+				ResultsTextBox.Text = debugLog.ToString();
+				AppendToLogFile(debugLog.ToString());
 
 				var overlay = new OverlayWindow();
 				overlay.ShowPrices(regionToText);
 				overlay.Show();
-
 			}
 			catch (Exception ex)
 			{
@@ -282,34 +247,34 @@ namespace WarframeRelicScanner
 			{
 				return new List<System.Drawing.Rectangle>
 				{
-					new(480, 405, 230, 55),
-					new(722, 405, 230, 55),
-					new(964, 405, 230, 55),
-					new(1210, 405, 230, 55),
+					new(474, 405, 240, 55),
+					new(716, 405, 240, 55),
+					new(958, 405, 240, 55),
+					new(1204, 405, 240, 55),
 				};
 			}
 			if (regionCount == 3)
 			{
 				return new List<System.Drawing.Rectangle>
 				{
-					new(600, 405, 230, 55),
-					new(840, 405, 230, 55),
-					new(1086, 405, 230, 55),
+					new(594, 405, 240, 55),
+					new(854, 405, 240, 55),
+					new(1080, 405, 240, 55),
 				};
 			}
 			if (regionCount == 2)
 			{
 				return new List<System.Drawing.Rectangle>
 				{
-					new(722, 405, 230, 55),
-					new(966, 405, 230, 55),
+					new(716, 405, 240, 55),
+					new(960, 405, 240, 55),
 				};
 			}
 			if (regionCount == 1)
 			{
 				return new List<System.Drawing.Rectangle>
 				{
-					new(840, 405, 230, 55),
+					new(830, 405, 240, 55),
 				};
 			}
 
@@ -389,7 +354,7 @@ namespace WarframeRelicScanner
 			base.OnClosed(e);
 		}
 
-		private static void AppendToLogFile(string message)
+		public static void AppendToLogFile(string message)
 		{
 			string logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log.txt");
 			File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
