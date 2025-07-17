@@ -52,7 +52,7 @@ namespace CrackedRelicPriceChecker
 				};
 
 				Canvas.SetLeft(text, rect.Left);
-				Canvas.SetTop(text, rect.Top - 30); // shift above reward box
+				Canvas.SetTop(text, rect.Top - 246); // shift above reward box
 				canvas.Children.Add(text);
 
 				StartAutoCloseTimer();
