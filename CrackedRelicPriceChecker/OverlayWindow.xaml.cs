@@ -31,29 +31,32 @@ namespace CrackedRelicPriceChecker
 
 		public void ShowPrices(Dictionary<System.Drawing.Rectangle, string> regionToText)
 		{
-			OverlayCanvas.Children.Clear();
+			var canvas = OverlayCanvas;
+			canvas.Children.Clear();
 
 			foreach (var kvp in regionToText)
 			{
 				var rect = kvp.Key;
-				var text = kvp.Value;
+				var label = kvp.Value;
 
-				var label = new TextBlock
+				var text = new TextBlock
 				{
-					Text = text,
-					Foreground = System.Windows.Media.Brushes.Gold,
-					FontSize = 16,
+					Text = label,
+					FontSize = 18,
 					FontWeight = FontWeights.Bold,
-					Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(128, 0, 0, 0)),
+					Foreground = System.Windows.Media.Brushes.Yellow,
+					Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(180, 0, 0, 0)), // semi-transparent black
+					TextWrapping = TextWrapping.Wrap,
+					MaxWidth = 280,
 					Padding = new Thickness(4)
 				};
 
-				Canvas.SetLeft(label, rect.Left + 10);
-				Canvas.SetTop(label, rect.Top - 212); // slightly above the reward box
-				OverlayCanvas.Children.Add(label);
-			}
+				Canvas.SetLeft(text, rect.Left);
+				Canvas.SetTop(text, rect.Top - 30); // shift above reward box
+				canvas.Children.Add(text);
 
-			StartAutoCloseTimer();
+				StartAutoCloseTimer();
+			}
 		}
 
 		private void StartAutoCloseTimer()
